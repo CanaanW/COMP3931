@@ -1,0 +1,8 @@
+prefix=/home/canaan/catkin_ws/install
+
+Name: move_turtlebot
+Description: Description of move_turtlebot
+Version: 0.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 
