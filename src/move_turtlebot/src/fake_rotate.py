@@ -6,8 +6,10 @@ from sensor_msgs.msg import LaserScan
 from gazebo_msgs.msg import ModelStates
 from nav_msgs.msg import Odometry
 from std_srvs.srv import Empty
-# from math import dist
+import math
+from math import pi
 import numpy as np
+from tf.transformations import euler_from_quaternion, quaternion_from_euler
 import random
 
 class QLearn:
@@ -20,12 +22,13 @@ class QLearn:
         # self.goal=(2,2)
 
     def getQ(self, state, action):
+        # print("Q(%s,%s) = %f"%(state, action, self.q.get((state, action),0.0)))
         return self.q.get((state, action), 0.0)
 
     def learnQ(self, state, action, reward, value):
         '''
         Q-learning:
-            Q(s, a) += alpha * (reward(s,a) + max(Q(s') - Q(s,a))            
+            Q(s, a) += alpha * (reward(s,a) + max(Q(s') - Q(s,a)))        
         '''
         oldv = self.q.get((state, action), None)
         if oldv is None:
@@ -42,6 +45,7 @@ class QLearn:
             # add random values to all the actions, recalculate maxQ
             q = [q[i] + random.random() * mag - .5 * mag for i in range(len(self.actions))] 
             maxQ = max(q)
+            # print("maxQ=%f"%maxQ)
 
         count = q.count(maxQ)
         # In case there're several state-action max values 
@@ -79,7 +83,7 @@ class AvoidObstacle(QLearn):
         self.actions = ['left', 'right', 'forward']
 
         # Initialize QLearn
-        self.qlearn = QLearn(self.actions, epsilon=0.9, alpha=0.1, gamma=0.7)
+        self.qlearn = QLearn(self.actions, epsilon=1, alpha=0.1, gamma=0.4)
 
         # Set initial state
         self.state = 'no_obstacle'
@@ -87,13 +91,9 @@ class AvoidObstacle(QLearn):
     def get_goal_distance(self, p1):
         return np.sqrt((self.goal[0] - p1[0])**2 + (self.goal[1]-p1[1])**2)
 
-    def odom(self, data):  
-        self.position = [data.pose.pose.position.x, data.pose.pose.position.y]
-    
-    def stop(self):
-        self.rot.linear.x = 0
-        self.rot.angular.z = 0
-
+    def odom(self, odom):  
+        self.position = [odom.pose.pose.position.x, odom.pose.pose.position.y]
+        
     def move_left(self):
         self.rot.linear.x = 0
         self.rot.angular.z = 1
@@ -112,43 +112,42 @@ class AvoidObstacle(QLearn):
         if state == 'obstacle_front':
             reward = -10
         elif state == 'obstacle_left':
-            reward  = -5
+            reward = -5
         elif state == 'obstacle_right':
             reward = -5
         elif state == 'closer':
             reward = 3
         elif state == 'farther':
             reward = -3
-        elif self.current_distance < 0.1:
-            reward = 100
+        elif self.goal_distance < 0.15:
+            reward = 200
         elif state == 'crash':
-            reward = -100
-        else:
-            reward = 1
+            reward = -200
         return reward
 
         
-    def scan(self, data):
+    def scan(self, scan):
         # Get turtlebot x,y coords
         previous_pos = self.position
 
-        # Wait for half a second then get NEW turtlebot x,y coords 
-        rospy.sleep(0.5)
+        # Wait then get NEW turtlebot x,y coords 
+        rospy.sleep(0.05)
         current_pos = self.position
 
         # Calculate previous distance and current distance (current distance should be smaller than previous distance)
         previous_distance = self.get_goal_distance(previous_pos)
-        self.current_distance = self.get_goal_distance(current_pos)
+        self.goal_distance = self.get_goal_distance(current_pos)
+        print("goal distance = %f"%self.goal_distance)
 
         # Find closest object to turtlebot in front, left and right
-        front_min_distance = min(data.ranges[1:10] + data.ranges[-10:])
-        left_min_distance = min(data.ranges[11:30])
-        right_min_distance = min(data.ranges[-30:-11])
+        front_min_distance = min(scan.ranges[1:10] + scan.ranges[-10:])
+        left_min_distance = min(scan.ranges[11:30])
+        right_min_distance = min(scan.ranges[-30:-11])
 
-        abs_min_distance = min(data.ranges)
+        abs_min_distance = min(scan.ranges)
 
         # Set distance thresholds for object proximity
-        check_distance = 0.5
+        check_distance = 0.6
         side_check_distance = check_distance - 0.1
 
         # If the nearest object to turtlebot is closer than threshold then there is an object, change state to reflect this
@@ -160,12 +159,18 @@ class AvoidObstacle(QLearn):
             elif right_min_distance < left_min_distance and right_min_distance < side_check_distance:
                 self.state = 'obstacle_right'
             else:
-                if self.current_distance < previous_distance:
-                    self.state = 'closer'
+                if self.goal_distance < previous_distance:
+                    if self.heading>0 and self.heading<1:
+                        self.state = 'closer + 1'
+                    else:
+                        self.state = 'closer'
                 else:
-                    self.state = 'farther'
+                    if self.heading>0 and self.heading<1:
+                        self.state = 'farther + 1'
+                    else:
+                        self.state = 'farther'
         
-        if abs_min_distance < 0.2:
+        if abs_min_distance < 0.15:
             self.state = 'crash'
             print("YOU CRASHED!!")
             self.reset()

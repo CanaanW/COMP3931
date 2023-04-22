@@ -1,92 +1,61 @@
 #! /usr/bin/env python
+
 import rospy
+import time
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
-from gazebo_msgs.msg import ModelStates
-import gym
-import rospkg
-# from openai_ros.openai_ros_common import StartOpenAI_ROS_Environment
-
+from nav_msgs.msg import Odometry
+from std_srvs.srv import Empty
+import math
+from math import pi
+import numpy as np
+from tf.transformations import euler_from_quaternion, quaternion_from_euler
 import random
+import csv
 
-'''
-Actions = [0, 1, 2]
-move_left = 0
-move_right = 1
-move_forward = 2
-
-State = [x,y, theta, front_min, left_min, right_min]
-'''
-class MyEnv(gym.Env):
+class Env():
     def __init__(self):
-
-        self.action_space = spaces.Discrete(3)
-        # self.observation_space = 
-
-
-class QLearn(object):
-    def __init__(self, actions, epsilon, alpha, gamma):
-        self.q = {}
-        self.epsilon = epsilon  # exploration constant
-        self.alpha = alpha      # discount constant
-        self.gamma = gamma      # discount factor
-        self.actions = actions
-
-    def getQ(self, state, action):
-        return self.q.get((state, action), 0.0)
-
-    def learnQ(self, state, action, reward, value):
-        '''
-        Q-learning:
-            Q(s, a) += alpha * (reward(s,a) + max(Q(s') - Q(s,a))            
-        '''
-        oldv = self.q.get((state, action), None)
-        if oldv is None:
-            self.q[(state, action)] = reward
-        else:
-            self.q[(state, action)] = oldv + self.alpha * (value - oldv)
-
-    def chooseAction(self, state, return_q=False):
-        q = [self.getQ(state, a) for a in self.actions]
-        maxQ = max(q)
-
-        if random.random() < self.epsilon:
-            minQ = min(q); mag = max(abs(minQ), abs(maxQ))
-            # add random values to all the actions, recalculate maxQ
-            q = [q[i] + random.random() * mag - .5 * mag for i in range(len(self.actions))] 
-            maxQ = max(q)
-
-        count = q.count(maxQ)
-        # In case there're several state-action max values 
-        # we select a random one among them
-        if count > 1:
-            best = [i for i in range(len(self.actions)) if q[i] == maxQ]
-            i = random.choice(best)
-        else:
-            i = q.index(maxQ)
-
-        action = self.actions[i]        
-        if return_q: # if they want it, give it!
-            return action, q
-        return action
-
-    def learn(self, state1, action1, reward, state2):
-        maxqnew = max([self.getQ(state2, a) for a in self.actions])
-        self.learnQ(state1, action1, reward, reward + self.gamma*maxqnew)
-
-
-class AvoidObstacle(QLearn):
-    def __init__(self):
-        rospy.init_node('rotate_turtlebot')
+        rospy.Subscriber('/odom', Odometry, self.odom)
         rospy.Subscriber('/scan', LaserScan, self.scan)
-        rospy.Subscriber('/gazebo/model_states', ModelStates, self.pose)
-        self.pub = rospy.Publisher('/cmd_vel', Twist, queue_size = 1)
+        self.reset_world = rospy.ServiceProxy('gazebo/reset_simulation', Empty)
+        self.pub = rospy.Publisher('/cmd_vel', Twist, queue_size=1)
         self.rate = rospy.Rate(10)
+        self.goal = [2,2]
+        self.position = []
         self.rot = Twist()
+        self.crash = False
+        self.goal_angle = 0
 
-    def stop(self):
-        self.rot.linear.x=0
-        self.rot.angular.z=0
+    def get_goal_distance(self, p1):
+        return np.sqrt((self.goal[0] - p1[0])**2 + (self.goal[1]-p1[1])**2)
+
+    def odom(self, odom):  
+        self.position = [odom.pose.pose.position.x, odom.pose.pose.position.y]
+        orientation = odom.pose.pose.orientation
+        orientation_list = [orientation.x, orientation.y, orientation.z, orientation.w]
+
+        _, _, yaw = euler_from_quaternion(orientation_list)
+        
+        goal_line = math.atan2(self.goal[1] - self.position[1], self.goal[0] - self.position[0])
+        goal_angle = goal_line - yaw
+        if goal_angle > 2*pi:
+            goal_angle -= 2*pi
+        elif goal_angle < -2*pi:
+            goal_angle += 2*pi
+        self.goal_angle = round(goal_angle, 2)
+    
+    def scan(self, scan):
+        scan_range = []
+
+        for i in scan.ranges:
+            if i == float('Inf'):
+                scan_range.append(3.5)
+            elif np.isnan(i):
+                scan_range.append(0)
+            else:
+                scan_range.append(i)
+
+        self.scan_range = scan_range
 
     def move_left(self):
         self.rot.linear.x = 0
@@ -98,55 +67,75 @@ class AvoidObstacle(QLearn):
 
     def move_forward(self):
         self.rot.angular.z = 0
-        self.rot.linear.x = 0.3
+        self.rot.linear.x = 0.15
 
-    def move_back(self):
-        self.rot.angular.z = 0
-        self.rot.linear.x = -0.3
+    def get_reward(self, state, crash):
+        reward = 0
 
-    def pose(self, data):
-        # print("%s: pose\n(%.2f, %.2f,%.2f)\n"%(data.name[-1], data.pose[-1].position.x, data.pose[-1].position.y, data.pose[-1].orientation.z,data.pose[-1].orientation.w))
-        print(data)
-        return((data.pose[-1].position.x),(data.pose[-1].position.y),(data.pose[-1].orientation.z))
-        # print(data.twist[-1])
-
-    def scan(self, data):
-        front_min_distance = min(data.ranges[1:10] + data.ranges[-10:])
-        left_min_distance = min(data.ranges[11:30])
-        right_min_distance = min(data.ranges[-30:-11])
-        check_distance = 0.5
-        side_check_distance = check_distance - 0.1
-        if front_min_distance < check_distance:
-            print("front")
-            self.move_right()
+        prev_distance = round(state[-1],2)
+        curr_distance = round(state[-2],2)
+        goal_angle = state[-3]
+        
+        if prev_distance>curr_distance:
+            distance_reward = 1
         else:
-            if left_min_distance < right_min_distance and left_min_distance < side_check_distance:
-                print("move right")
-                self.move_right()
-            elif right_min_distance < left_min_distance and right_min_distance < side_check_distance:
-                print("move left")
-                self.move_left()
-            else:
-                self.move_forward()
+            distance_reward = -1
+        
+        if curr_distance < 0.15:
+            print("---GOAL FOUND!---\n"
+                  "---GOAL FOUND!---\n"
+                  "---GOAL_FOUND!---")
+            reward = 500
+        elif crash:
+            print("\n---COLLISION!---\n")
+            reward = -500
+        else:
+            reward = (prev_distance-curr_distance)+(distance_reward*10)+(-goal_angle**2)
+
+            with open('rewards.txt', mode = 'a') as csv_file:
+                reward_writer = csv.writer(csv_file, delimiter=",")
+                reward_writer.writerow([reward])
+        return reward
+        
+    def get_state(self):
+        crash=False
+        prev_distance = self.curr_distance
+        self.curr_distance = self.get_goal_distance(self.position)
+
+        goal_angle = self.goal_angle
+
+        min_abs_distance = min(self.scan_range)
+        if 0<min_abs_distance<0.12:
+            crash = True
+        
+        return self.scan_range + [goal_angle, self.curr_distance, prev_distance], crash
+    
+    def step(self, action):
+        if action == 0:
+            self.move_left()
+        elif action == 1:
+            self.move_forward()
+        elif action == 2:
+            self.move_right()
         self.pub.publish(self.rot)
-        self.rate.sleep() 
 
+        state, crash = self.get_state()
+        reward = self.get_reward(state, crash)
 
-if __name__ == "__main__":
-    # env = gym.make("Taxi-v3").env
-    # env.reset()
-    # # env.render()
-    # print(env.action_space)
-    # print(env.observation_space)
+        return np.asarray(state), reward, crash
+    
+    def reset(self):
+        with open ('rewards.txt', mode ='a') as csv_file:
+            csv_file.write("--------------------------------------")
 
-    # state = env.encode(3, 3, 0, 0) # (taxi row, taxi column, passenger index, destination index)
-    # print("State:", state)
+        self.prev_distance = self.get_goal_distance(self.position)
+        self.curr_distance = self.get_goal_distance(self.position)
+        rospy.wait_for_service('gazebo/reset_simulation')
+        try:
+            self.reset_world()
+        except (rospy.ServiceException) as e:
+            print("gazebo/reset_simulation service call failed")
+        
+        state, _ = self.get_state()
 
-    # env.s = state
-    # env.render()
-
-    try:
-        AvoidObstacle()
-        rospy.spin()
-    except rospy.ROSInterruptException:
-        pass
+        return np.asarray(state)
