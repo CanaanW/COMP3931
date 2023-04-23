@@ -59,11 +59,11 @@ class Env():
 
     def move_left(self):
         self.rot.linear.x = 0
-        self.rot.angular.z = 1
+        self.rot.angular.z = 0.75
 
     def move_right(self):
         self.rot.linear.x = 0
-        self.rot.angular.z = -1
+        self.rot.angular.z = -0.75
 
     def move_forward(self):
         self.rot.angular.z = 0
@@ -72,8 +72,8 @@ class Env():
     def get_reward(self, state, crash):
         reward = 0
 
-        prev_distance = round(state[-1],2)
-        curr_distance = round(state[-2],2)
+        prev_distance = round(state[-1],3)
+        curr_distance = round(state[-2],3)
         goal_angle = state[-3]
         
         if prev_distance>curr_distance:
@@ -92,9 +92,9 @@ class Env():
         else:
             reward = (prev_distance-curr_distance)+(distance_reward*10)+(-goal_angle**2)
 
-            with open('rewards.txt', mode = 'a') as csv_file:
-                reward_writer = csv.writer(csv_file, delimiter=",")
-                reward_writer.writerow([reward])
+        with open('rewards.txt', mode = 'a') as csv_file:
+            reward_writer = csv.writer(csv_file, delimiter=",")
+            reward_writer.writerow([reward])
         return reward
         
     def get_state(self):
@@ -126,7 +126,7 @@ class Env():
     
     def reset(self):
         with open ('rewards.txt', mode ='a') as csv_file:
-            csv_file.write("--------------------------------------")
+            csv_file.write("--------------------------------------\n")
 
         self.prev_distance = self.get_goal_distance(self.position)
         self.curr_distance = self.get_goal_distance(self.position)
