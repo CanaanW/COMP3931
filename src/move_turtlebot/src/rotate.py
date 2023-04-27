@@ -22,6 +22,7 @@ class Env():
         self.rate = rospy.Rate(10)
         self.goal = [2,2]
         self.position = []
+        self.rewards_episode = [0]
         self.rot = Twist()
         self.crash = False
         self.goal_angle = 0
@@ -43,6 +44,8 @@ class Env():
         elif goal_angle < -2*pi:
             goal_angle += 2*pi
         self.goal_angle = round(goal_angle, 2)
+
+        # self.rate.sleep()
     
     def scan(self, scan):
         scan_range = []
@@ -54,32 +57,40 @@ class Env():
                 scan_range.append(0)
             else:
                 scan_range.append(i)
-
+        
         self.scan_range = scan_range
+        # self.rate.sleep()
+
 
     def move_left(self):
         self.rot.linear.x = 0
-        self.rot.angular.z = 0.75
+        self.rot.angular.z = 1
 
     def move_right(self):
         self.rot.linear.x = 0
-        self.rot.angular.z = -0.75
+        self.rot.angular.z = -1
 
     def move_forward(self):
         self.rot.angular.z = 0
         self.rot.linear.x = 0.15
 
+    def stop(self):
+        self.rot.angular.z = 0
+        self.rot.linear.x = 0
+
     def get_reward(self, state, crash):
         reward = 0
 
-        prev_distance = round(state[-1],3)
-        curr_distance = round(state[-2],3)
+        prev_distance = round(state[-1],2)
+        curr_distance = round(state[-2],2)
         goal_angle = state[-3]
         
         if prev_distance>curr_distance:
-            distance_reward = 1
+            distance_reward = 10
+        elif prev_distance == curr_distance:
+            distance_reward = 0
         else:
-            distance_reward = -1
+            distance_reward = -10
         
         if curr_distance < 0.15:
             print("---GOAL FOUND!---\n"
@@ -88,13 +99,15 @@ class Env():
             reward = 500
         elif crash:
             print("\n---COLLISION!---\n")
+            self.stop()
             reward = -500
         else:
-            reward = (prev_distance-curr_distance)+(distance_reward*10)+(-goal_angle**2)
-
+            reward = (prev_distance-curr_distance)+(distance_reward)+(-goal_angle**2)
         with open('rewards.txt', mode = 'a') as csv_file:
             reward_writer = csv.writer(csv_file, delimiter=",")
             reward_writer.writerow([reward])
+            
+        self.rewards_episode.append(reward)
         return reward
         
     def get_state(self):
@@ -106,6 +119,7 @@ class Env():
 
         min_abs_distance = min(self.scan_range)
         if 0<min_abs_distance<0.12:
+            # print(min_abs_distance)
             crash = True
         
         return self.scan_range + [goal_angle, self.curr_distance, prev_distance], crash
@@ -118,24 +132,31 @@ class Env():
         elif action == 2:
             self.move_right()
         self.pub.publish(self.rot)
+        # self.rate.sleep()
+
 
         state, crash = self.get_state()
+        # print(crash)
         reward = self.get_reward(state, crash)
 
         return np.asarray(state), reward, crash
     
     def reset(self):
+        mean_reward = float(np.mean(self.rewards_episode))
+        self.rewards_episode = []
         with open ('rewards.txt', mode ='a') as csv_file:
-            csv_file.write("--------------------------------------\n")
+            csv_file.write("mean reward for episode: %f \n"%mean_reward)
+            csv_file.write("--------------------------------------\n")        
 
-        self.prev_distance = self.get_goal_distance(self.position)
-        self.curr_distance = self.get_goal_distance(self.position)
         rospy.wait_for_service('gazebo/reset_simulation')
         try:
             self.reset_world()
         except (rospy.ServiceException) as e:
             print("gazebo/reset_simulation service call failed")
         
-        state, _ = self.get_state()
+        self.prev_distance = self.get_goal_distance([-2,-2])
+        self.curr_distance = self.get_goal_distance([-2,-2])
+        
+        state, crash = self.get_state()
 
         return np.asarray(state)
