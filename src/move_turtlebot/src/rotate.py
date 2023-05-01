@@ -9,7 +9,7 @@ from std_srvs.srv import Empty
 import math
 from math import pi
 import numpy as np
-from tf.transformations import euler_from_quaternion, quaternion_from_euler
+from tf.transformations import euler_from_quaternion
 import random
 import csv
 
@@ -44,8 +44,7 @@ class Env():
         elif goal_angle < -2*pi:
             goal_angle += 2*pi
         self.goal_angle = round(goal_angle, 2)
-
-        # self.rate.sleep()
+    
     
     def scan(self, scan):
         scan_range = []
@@ -59,7 +58,6 @@ class Env():
                 scan_range.append(i)
         
         self.scan_range = scan_range
-        # self.rate.sleep()
 
 
     def move_left(self):
@@ -78,7 +76,7 @@ class Env():
         self.rot.angular.z = 0
         self.rot.linear.x = 0
 
-    def get_reward(self, state, crash):
+    def get_reward(self, state, crash, goal):
         reward = 0
 
         prev_distance = round(state[-1],2)
@@ -92,26 +90,24 @@ class Env():
         else:
             distance_reward = -10
         
-        if curr_distance < 0.15:
-            print("---GOAL FOUND!---\n"
-                  "---GOAL FOUND!---\n"
-                  "---GOAL_FOUND!---")
+        if goal:
+            print("---GOAL FOUND!---")
             reward = 500
         elif crash:
-            print("\n---COLLISION!---\n")
+            print("\n---COLLISION!---")
             self.stop()
             reward = -500
         else:
             reward = (prev_distance-curr_distance)+(distance_reward)+(-goal_angle**2)
-        with open('rewards.txt', mode = 'a') as csv_file:
-            reward_writer = csv.writer(csv_file, delimiter=",")
-            reward_writer.writerow([reward])
+        with open('rewards.txt', mode = 'a') as a:
+            a.write(str(reward)+", ")
             
         self.rewards_episode.append(reward)
         return reward
         
     def get_state(self):
-        crash=False
+        crash = False
+        goal = False
         prev_distance = self.curr_distance
         self.curr_distance = self.get_goal_distance(self.position)
 
@@ -119,10 +115,12 @@ class Env():
 
         min_abs_distance = min(self.scan_range)
         if 0<min_abs_distance<0.12:
-            # print(min_abs_distance)
             crash = True
+
+        if self.curr_distance < 0.15:
+            goal = True
         
-        return self.scan_range + [goal_angle, self.curr_distance, prev_distance], crash
+        return self.scan_range + [goal_angle, self.curr_distance, prev_distance], crash, goal
     
     def step(self, action):
         if action == 0:
@@ -132,21 +130,17 @@ class Env():
         elif action == 2:
             self.move_right()
         self.pub.publish(self.rot)
-        # self.rate.sleep()
 
+        state, crash, goal = self.get_state()
+        reward = self.get_reward(state, crash, goal)
 
-        state, crash = self.get_state()
-        # print(crash)
-        reward = self.get_reward(state, crash)
-
-        return np.asarray(state), reward, crash
+        return np.asarray(state), reward, crash, goal
     
     def reset(self):
         mean_reward = float(np.mean(self.rewards_episode))
-        self.rewards_episode = []
+        self.rewards_episode = [0]
         with open ('rewards.txt', mode ='a') as csv_file:
-            csv_file.write("mean reward for episode: %f \n"%mean_reward)
-            csv_file.write("--------------------------------------\n")        
+            csv_file.write("\nmean reward for episode: %f\n"%mean_reward)      
 
         rospy.wait_for_service('gazebo/reset_simulation')
         try:
@@ -157,6 +151,8 @@ class Env():
         self.prev_distance = self.get_goal_distance([-2,-2])
         self.curr_distance = self.get_goal_distance([-2,-2])
         
-        state, crash = self.get_state()
+        state, crash,_ = self.get_state()
+        while crash:
+            state,crash,_ = self.get_state()
 
-        return np.asarray(state)
+        return (np.asarray(state), crash)

@@ -2,6 +2,7 @@
 
 import random
 import numpy as np
+import csv
 import time
 import rospy
 import random
@@ -26,12 +27,12 @@ class DQN():
         self.learning_rate = 0.00025
         self.memory = deque(maxlen=1000000) # replay buffer for experience replay
 
-        self.model = self.buildModel(state_size, action_size)
-        self.target_model = self.buildModel(state_size, action_size)
+        self.model = self.buildModel()
+        self.target_model = self.buildModel()
 
         self.updateTargetModel()
     
-    def buildModel(self, state_size, action_size):
+    def buildModel(self):
         model = Sequential()
         dropout = 0.2
 
@@ -127,12 +128,15 @@ if __name__ == '__main__':
 
     for e in range(1, EPISODES):
         done = False
-        state = env.reset()
+        goal = False
+        state,_ = env.reset()
         score = 0
+        with open ("rewards.txt", mode='a') as file:
+            file.write("episode %i: "%e)         
         for t in range(1000): 
             action = agent.getAction(state)
 
-            next_state, reward, done = env.step(action)
+            next_state, reward, done, goal = env.step(action)
 
             agent.appendMemory(state, action, reward, next_state, done)
 
@@ -151,11 +155,17 @@ if __name__ == '__main__':
 
             global_step += 1
             if global_step % 2000 == 0:
-                print("UPDATE TARGET NETWORK")               
+                print("UPDATE TARGET NETWORK") 
+
+            if goal:
+                m, s = divmod(int(time.time() - start_time), 60)
+                h, m = divmod(m, 60)  
+                with open('rewards.txt', mode = 'a') as file:
+                    file.write("\nEp: %d score: %f epsilon: %.2f time: %d:%02d:%02d"%(e, score, agent.epsilon, h, m, s))
+                done = True                            
             
             if done:
                 agent.updateTargetModel()
-                # scores
                 m, s = divmod(int(time.time() - start_time), 60)
                 h, m = divmod(m, 60)                
             

@@ -3,14 +3,14 @@
 import random
 import numpy as np
 from keras.models import Sequential
-from keras.layers import Dense
+from keras.layers import Dense, Dropout, Activation
 from keras.optimizers import Adam
 import time
 import rospy
 import random
 import numpy as np
 from rotate import Env
-
+import csv
 
 class DoubleDQNAgent:
     def __init__(self, state_size, action_size, learning_rate=0.00025, gamma=0.99, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01):
@@ -86,21 +86,20 @@ if __name__ == '__main__':
     env = Env()
 
     agent = DoubleDQNAgent(state_size, action_size)
-    # scores, episodes = [], []
     global_step = 0
     start_time = time.time()
 
     for e in range(1, EPISODES):
-        done = False
-        state = env.reset()
-        score = 0
-        for t in range(1000): 
-            action = agent.choose_action(state)
-            print(t, action)
-            print("before",done)
 
-            next_state, reward, done = env.step(action)
-            print("after",done)
+        done = False
+        state,_ = env.reset()
+        score = 0
+        with open ("rewards.txt", mode='a') as file:
+            file.write("episode %i: "%e) 
+        for t in range(10000): 
+            action = agent.choose_action(state)
+
+            next_state, reward, done, goal = env.step(action)
 
             agent.remember(state, action, reward, next_state, done)
             agent.replay()
@@ -108,13 +107,20 @@ if __name__ == '__main__':
             score += reward
             state = next_state
 
-            if t >= 750:
-                print("REACHED 750 STEPS")
+            if t >= 5000:
+                print("REACHED %i STEPS"%t)
                 done = True
 
             global_step += 1
             if global_step % 2000 == 0:
-                print("UPDATING TARGET NETWORK")               
+                print("UPDATING TARGET NETWORK")  
+
+            if goal:
+                m, s = divmod(int(time.time() - start_time), 60)
+                h, m = divmod(m, 60)  
+                with open('rewards.txt', mode = 'a') as file:
+                    file.write("\nEp: %d score: %f epsilon: %.2f time: %d:%02d:%02d"%(e, score, agent.epsilon, h, m, s))
+                done = True             
             
             if done:
                 agent.update_target_network()
